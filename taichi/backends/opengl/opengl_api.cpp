@@ -321,27 +321,24 @@ bool ParallelSize_DynamicRange::is_indirect() const {
   return true;
 }
 
-CompiledKernel *ParallelSize::get_indirect_evaluator() {
+std::unique_ptr<CompiledKernel> ParallelSize::get_indirect_evaluator() {
   return nullptr;
 }
 
-CompiledKernel *ParallelSize_DynamicRange::get_indirect_evaluator() {
-  if (!indirect_evaluator) {
-    auto ps = std::make_unique<ParallelSize_ConstRange>(0);
-    size_t SPT = strides_per_thread.value_or(1);
-    size_t TPG = ParallelSize::get_threads_per_block();
-    std::string source =
+std::unique_ptr<CompiledKernel> ParallelSize_DynamicRange::get_indirect_evaluator() {
+  auto ps = std::make_unique<ParallelSize_ConstRange>(0);
+  size_t SPT = strides_per_thread.value_or(1);
+  size_t TPG = ParallelSize::get_threads_per_block();
+  std::string source =
 #include "taichi/backends/opengl/shaders/indirect.glsl.h"
-        +fmt::format(
-            "\nvoid main() {{\n"
-            "  _compute_indirect({}, {}, {}, {}, {}, {});\n"
-            "}}\n",
-            (int)const_begin, (int)const_end, range_begin, range_end, SPT, TPG);
-    ;
-    indirect_evaluator = std::make_unique<CompiledKernel>(
-        "indirect_evaluator_opengl", source, std::move(ps));
-  }
-  return indirect_evaluator.get();
+      +fmt::format(
+          "\nvoid main() {{\n"
+          "  _compute_indirect({}, {}, {}, {}, {}, {});\n"
+          "}}\n",
+          (int)const_begin, (int)const_end, range_begin, range_end, SPT, TPG);
+  ;
+  return std::make_unique<CompiledKernel>(
+      "indirect_evaluator_opengl", source, std::move(ps));
 }
 
 size_t ParallelSize::get_threads_per_block() const {
@@ -497,6 +494,7 @@ struct CompiledKernel::Impl {
   std::string kernel_name;
   std::unique_ptr<GLProgram> glsl;
   std::unique_ptr<ParallelSize> ps;
+  std::unique_ptr<CompiledKernel> indirect_evaluator = nullptr;
   std::string source;
 
   Impl(const std::string &kernel_name_,
@@ -511,6 +509,9 @@ struct CompiledKernel::Impl {
     display_kernel_info(kernel_name_, source);
     glsl = std::make_unique<GLProgram>(GLShader(source));
     glsl->link();
+    if (ps->is_indirect()) {
+      indirect_evaluator = ps->get_indirect_evaluator();
+    }
   }
 
   void dispatch_compute(GLSLLauncher *launcher) const {
@@ -528,8 +529,8 @@ struct CompiledKernel::Impl {
       check_opengl_error(fmt::format("glDispatchCompute({})", num_blocks));
 
     } else {
-      auto ie = ps->get_indirect_evaluator();
-      ie->dispatch_compute(launcher);
+      TI_ASSERT(indirect_evaluator);
+      indirect_evaluator->dispatch_compute(launcher);
       auto runtime = launcher->impl->core_bufs.get(GLBufId::Runtime);
       runtime->as_indirect_buffer();
       glsl->use();
@@ -812,11 +813,11 @@ size_t ParallelSize_StructFor::get_num_strides(GLSLLauncher *launcher) const {
   TI_NOT_IMPLEMENTED;
 }
 
-CompiledKernel *ParallelSize::get_indirect_evaluator() {
+std::unique_ptr<CompiledKernel> ParallelSize::get_indirect_evaluator() {
   TI_NOT_IMPLEMENTED;
 }
 
-CompiledKernel *ParallelSize_DynamicRange::get_indirect_evaluator() {
+std::unique_ptr<CompiledKernel> ParallelSize_DynamicRange::get_indirect_evaluator() {
   TI_NOT_IMPLEMENTED;
 }
 
